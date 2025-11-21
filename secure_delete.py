@@ -116,17 +116,17 @@ class WindowsTimestampObfuscator:
     FILE_WRITE_EA = 0x10
     FILE_READ_EA = 0x8
     OPEN_EXISTING = 3
-    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000 # Bypasses normal security checks
     FILE_SHARE_READ = 0x00000001
     FILE_SHARE_WRITE = 0x00000002
     FILE_SHARE_DELETE = 0x00000004
     
     # Privilege constants
-    SE_BACKUP_NAME = "SeBackupPrivilege"
-    SE_RESTORE_NAME = "SeRestorePrivilege"
-    TOKEN_ADJUST_PRIVILEGES = 0x0020
-    TOKEN_QUERY = 0x0008
-    SE_PRIVILEGE_ENABLED = 0x00000002
+    SE_BACKUP_NAME = "SeBackupPrivilege" # Read any file (bypass permissions)
+    SE_RESTORE_NAME = "SeRestorePrivilege" # Write any file (bypass permissions)
+    TOKEN_ADJUST_PRIVILEGES = 0x0020 # # Can change privileges
+    TOKEN_QUERY = 0x0008   # Can read privilege info
+    SE_PRIVILEGE_ENABLED = 0x00000002 # Enable the privilege 
     
     @staticmethod
     def enable_backup_privileges():
