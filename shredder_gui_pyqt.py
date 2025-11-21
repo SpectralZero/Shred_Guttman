@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QLabel, QPushButton, QLineEdit, QCheckBox,
                             QProgressBar, QTextEdit, QGroupBox, QFileDialog, 
                             QMessageBox, QSplitter, QFrame, QComboBox, QApplication)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer
 from PyQt6.QtGui import QTextCursor
 
 from secure_delete import shred_file, shred_directory, get_available_methods, validate_shredding_path
@@ -122,6 +122,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         self.shredding_methods = get_available_methods()
         self.current_operation: Optional[ShreddingThread] = None
         self.operation_count = 0
+        self.hint_label = None
         
         # Initialize theme manager
         self.theme_manager = ThemeManager()
@@ -132,11 +133,17 @@ class AdvancedModeShredderWindow(QMainWindow):
         self.init_ui()
         self.apply_theme(self.settings.value("theme", "cyber_dark"))
         
+        # Fullscreen hint
+        QTimer.singleShot(1000, self._show_fullscreen_hint)  # Show after 1 second delay
+
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle(" Advanced MODE FILE SHREDDER - ULTIMATE SECURITY DATA DESTRUCTION")
-        self.setMinimumSize(1050, 760)
+        self.setMinimumSize(1300, 915)
         
+        self.is_fullscreen = False
+        self.toggle_fullscreen()
+
         # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -165,7 +172,62 @@ class AdvancedModeShredderWindow(QMainWindow):
         
         # Load saved settings
         self.load_settings()
+
+    
+    def keyPressEvent(self, event):
+        # F11 → Toggle Fullscreen
+        if event.key() == Qt.Key.Key_F11:
+            self.toggle_fullscreen()
+
+        # ESC → Exit Fullscreen
+        if event.key() == Qt.Key.Key_Escape:
+            self.exit_fullscreen()
+
+    def toggle_fullscreen(self):
+        """Toggle fullscreen mode."""
+        if self.is_fullscreen:
+            self.showNormal()
+            self.is_fullscreen = False
+        else:
+            self.showFullScreen()
+            self.is_fullscreen = True
+
+    def exit_fullscreen(self):
+        """Exit fullscreen mode."""
+        if self.is_fullscreen:
+            self.showNormal()
+            self.is_fullscreen = False
+
+    def _show_fullscreen_hint(self):
+     self.show_temporary_hint("Tip: Press F11 to toggle fullscreen mode • Press ESC to exit", 5000)
+
+    def show_temporary_hint(self, message: str, duration: int = 5000):
+        """Show a temporary hint message that disappears after specified duration"""
+        if hasattr(self, 'hint_label') and self.hint_label:
+            self.hint_label.close()
         
+        self.hint_label = QLabel(message, self)
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hint_label.setStyleSheet("""
+            QLabel {
+                background-color: #00ff88;
+                color: #000000;
+                font-weight: bold;
+                padding: 10px;
+                border: 2px solid #00cc66;
+                border-radius: 5px;
+                font-size: 12px;
+            }
+        """)
+        
+        # Position at top of window
+        self.hint_label.move(50, 50)
+        self.hint_label.adjustSize()
+        self.hint_label.show()
+        
+        # Set timer to hide the label
+        QTimer.singleShot(duration, self.hint_label.hide)
+
     def create_control_panel(self) -> QWidget:
         """Create the left control panel"""
         panel = QWidget()
@@ -226,7 +288,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         method_info = self.shredding_methods["gutmann_35_pass"]
         security_label = QLabel(f" {method_info['security']} SECURITY |  {method_info['passes']} PASSES |  AUTO-METADATA OBFUSCATION")
         security_label.setStyleSheet("""
-            font-size: 10px;
+            font-size: 12px;
             color: #00ff88;
             background-color: #003300;
             padding: 5px;
@@ -289,17 +351,17 @@ class AdvancedModeShredderWindow(QMainWindow):
     
     def create_config_section(self) -> QGroupBox:
         """Create configuration section"""
-        group = QGroupBox("⚙️ ULTIMATE SHREDDING CONFIGURATION")
+        group = QGroupBox("ULTIMATE SHREDDING CONFIGURATION")
         layout = QVBoxLayout(group)
         
         # Security info
         method_info = self.shredding_methods["gutmann_35_pass"]
-        method_label = QLabel(f"🔄 {method_info['passes']} PASS GUTMANN METHOD | 🔒 {method_info['security']} SECURITY")
+        method_label = QLabel(f" {method_info['passes']} PASS GUTMANN METHOD |  {method_info['security']} SECURITY")
         method_label.setStyleSheet("color: #00ff88; font-size: 12px; font-weight: bold;")
         layout.addWidget(method_label)
         
         # Keep file option
-        self.keep_file_check = QCheckBox("💾 Preserve file after shredding (for verification)")
+        self.keep_file_check = QCheckBox(" Preserve file after shredding (for verification)")
         self.keep_file_check.stateChanged.connect(self.on_keep_file_changed)
         layout.addWidget(self.keep_file_check)
         
@@ -308,7 +370,7 @@ class AdvancedModeShredderWindow(QMainWindow):
             " DESTRUCTION: File completely destroyed and irrecoverable\n"
             " PRESERVATION: File preserved with obfuscated name and metadata"
         )
-        info_label.setStyleSheet("color: #888888; font-size: 9px;")
+        info_label.setStyleSheet("color: #888888; font-size: 11px;")
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
         
@@ -316,7 +378,7 @@ class AdvancedModeShredderWindow(QMainWindow):
     
     def create_keep_file_section(self) -> QGroupBox:
         """Create keep file options section"""
-        group = QGroupBox("💾 FILE PRESERVATION LOCATION")
+        group = QGroupBox("FILE PRESERVATION LOCATION")
         layout = QVBoxLayout(group)
         
         # Location selection
@@ -337,7 +399,7 @@ class AdvancedModeShredderWindow(QMainWindow):
             "If no location specified, file will be preserved in original directory with obfuscated name.\n"
             "File will be automatically renamed and timestamps obfuscated for maximum security."
         )
-        info_label.setStyleSheet("color: #888888; font-size: 9px;")
+        info_label.setStyleSheet("color: #888888; font-size: 11px;")
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
         
@@ -356,7 +418,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         layout.addWidget(self.overall_progress)
         
         self.overall_label = QLabel("🟢 READY FOR ULTIMATE DESTRUCTION")
-        self.overall_label.setStyleSheet("font-size: 10px; color: #00ff88;")
+        self.overall_label.setStyleSheet("font-size: 12px; color: #00ff88;")
         layout.addWidget(self.overall_label)
         
         # Current operation progress
@@ -367,7 +429,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         layout.addWidget(self.current_progress)
         
         self.current_label = QLabel("Waiting for Advanced MODE engagement...")
-        self.current_label.setStyleSheet("font-size: 10px; color: #888888;")
+        self.current_label.setStyleSheet("font-size: 12px; color: #888888;")
         layout.addWidget(self.current_label)
         
         return group
@@ -401,7 +463,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         layout.addWidget(self.start_btn)
         
         # Stop button
-        self.stop_btn = QPushButton("⏹️ ABORT OPERATION")
+        self.stop_btn = QPushButton("ABORT OPERATION")
         self.stop_btn.clicked.connect(self.stop_shredding)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setStyleSheet("""
@@ -429,7 +491,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         
         # Log header
-        log_header = QLabel("📝 Advanced MODE OPERATION LOG")
+        log_header = QLabel("OPERATION LOG")
         log_header.setStyleSheet("font-size: 14pt; font-weight: bold; color: #00ff88; margin-bottom: 10px;")
         layout.addWidget(log_header)
         
@@ -461,7 +523,7 @@ class AdvancedModeShredderWindow(QMainWindow):
                 background-color: #1a1a1a;
                 color: #00ff88;
                 font-family: 'Consolas', monospace;
-                font-size: 10px;
+                font-size: 16px;
                 border: 2px solid #333333;
                 border-radius: 5px;
             }
@@ -490,11 +552,11 @@ class AdvancedModeShredderWindow(QMainWindow):
         
         if is_valid:
             self.validation_label.setText(f"✅ {message}")
-            self.validation_label.setStyleSheet("color: #00ff88; font-size: 10px; font-weight: bold;")
+            self.validation_label.setStyleSheet("color: #00ff88; font-size: 12px; font-weight: bold;")
             self.start_btn.setEnabled(True)
         else:
             self.validation_label.setText(f"❌ {message}")
-            self.validation_label.setStyleSheet("color: #ff4444; font-size: 10px; font-weight: bold;")
+            self.validation_label.setStyleSheet("color: #ff4444; font-size: 12px; font-weight: bold;")
             self.start_btn.setEnabled(False)
     
     def browse_file(self):
@@ -575,7 +637,7 @@ class AdvancedModeShredderWindow(QMainWindow):
             if preserve_location:
                 QMessageBox.information(
                     self,
-                    "💾 File Preservation Mode",
+                    "File Preservation Mode",
                     f"FILE PRESERVATION MODE IS ENABLED.\n\n"
                     f"Files will be:\n"
                     f"• Overwritten 35 times with random data\n"
@@ -587,7 +649,7 @@ class AdvancedModeShredderWindow(QMainWindow):
             else:
                 QMessageBox.information(
                     self,
-                    "💾 File Preservation Mode",
+                    "File Preservation Mode",
                     "FILE PRESERVATION MODE IS ENABLED.\n\n"
                     "Files will be:\n"
                     "• Overwritten 35 times with random data\n"
@@ -621,7 +683,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         self.log(f" METHOD: GUTMANN 35-PASS - MAXIMUM SECURITY")
         self.log(f" PRESERVE: {'YES' if self.keep_file_check.isChecked() else 'NO'}")
         if preserve_location:
-            self.log(f"📦 LOCATION: {preserve_location}")
+            self.log(f"LOCATION: {preserve_location}")
         
         self.current_operation.start()
     
@@ -631,7 +693,7 @@ class AdvancedModeShredderWindow(QMainWindow):
             self.current_operation.stop()
             self.stop_btn.setEnabled(False)
             self.statusBar().showMessage("🟡 Stopping operation...")
-            self.log("⏹️ OPERATION CANCELLATION REQUESTED...")
+            self.log("OPERATION CANCELLATION REQUESTED...")
     
     def update_progress(self, current: int, total: int, status: str, bytes_processed: int):
         """Update progress displays"""
@@ -661,7 +723,7 @@ class AdvancedModeShredderWindow(QMainWindow):
         self.current_progress.setValue(0)
         
         if success:
-            self.overall_label.setText("✅ Advanced MODE OPERATION COMPLETED SUCCESSFULLY")
+            self.overall_label.setText("Advanced MODE OPERATION COMPLETED SUCCESSFULLY")
             self.current_label.setText("🟢 Ready for next operation")
             self.statusBar().showMessage("✅ Advanced MODE OPERATION COMPLETED")
             self.log(f"✅ SUCCESS: {message}")
@@ -676,7 +738,7 @@ class AdvancedModeShredderWindow(QMainWindow):
             else:
                 QMessageBox.information(
                     self,
-                    "☠️ Destruction Complete", 
+                    "Destruction Complete", 
                     f"ULTIMATE DESTRUCTION SUCCESSFUL:\n{message}\n\n"
                     f"All data has been permanently destroyed and is irrecoverable."
                 )
@@ -715,7 +777,7 @@ class AdvancedModeShredderWindow(QMainWindow):
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(self.log_text.toPlainText())
-                self.log(f"📤 Advanced MODE LOG EXPORTED TO: {filename}")
+                self.log(f"Advanced MODE LOG EXPORTED TO: {filename}")
             except Exception as e:
                 QMessageBox.critical(self, "❌ Export Error", f"Failed to export log: {e}")
     
