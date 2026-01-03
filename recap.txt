@@ -1,0 +1,421 @@
+0) Big Picture: What this program is trying to achieve
+
+Your code is a secure deletion (secure wipe) tool with a strict workflow:
+
+Validate target path (avoid system destruction + avoid symlinks)
+
+Rename the file many times (metadata/name obfuscation)
+
+Overwrite file content using Gutmann 35-pass patterns
+
+Obfuscate timestamps (Windows: using WinAPI calls, Unix: utime)
+
+Delete the file (or keep it if keep_file=True)
+
+For directories: repeat for every file, then remove the directory
+
+The goal is to make recovery tools (like Autopsy) recover garbage/unreadable content, with less useful metadata (name/timestamps).
+
+1) Imports and global logging
+Imports
+
+You import modules for:
+
+Filesystem operations: os, shutil, Path
+
+Strong randomness: secrets (cryptographically strong), random (not crypto)
+
+Time: time
+
+Thread control / cancellation: threading.Event
+
+Windows API: ctypes, ctypes.wintypes
+
+Typing / structure: Callable, Optional, Tuple, List, Dict
+
+System detection: platform
+
+psutil: currently imported but in the shown part not heavily used (prof might ask why it’s there → you can say “planned enhancements like checking open handles / disk type / process locks”).
+
+Logging
+logging.basicConfig(level=logging.INFO)
+LOG = logging.getLogger("Advanced_mode_shredder")
+
+
+This ensures the tool prints progress messages clearly (good for auditability + debugging).
+
+2) Custom exceptions
+ShredError(RuntimeError)
+
+Used for expected shredding failures:
+
+permission denied
+
+unsafe path
+
+write failure
+
+deletion verification failure
+
+OperationInterrupted(Exception)
+
+Used when a user cancels the operation via stop_event or progress callback return.
+
+This separation is good design:
+
+ShredError = “something went wrong”
+
+OperationInterrupted = “user canceled, not a tool failure”
+
+3) AdvancedModeShredder class: wipe patterns and method info
+
+This class is basically the configuration brain for wipe patterns.
+
+PATTERNS["gutmann_35_pass"]
+
+This is a list of 35 functions, each function returns bytes for a pass:
+
+Passes 1–4: random bytes (secrets.token_bytes)
+
+Passes 5–25: fixed patterns 0x55, 0xAA, 0x00, 0x11, …, 0xFF
+
+Passes 26–31: repeating 3-byte sequences (like 92 49 24)
+
+Passes 32–35: random bytes again
+
+This models the classic “Gutmann-like multi-pattern overwrite idea”.
+
+METHOD_DETAILS
+
+Metadata describing the method (name, number of passes, security label). Useful for UI/printing.
+
+get_wipe_method()
+
+Always returns the Gutmann 35-pass list (no user choice in this version).
+
+get_method_info()
+
+Returns the dictionary describing the method.
+
+How to explain to your prof:
+
+“I separated method selection from the overwrite engine so later I can easily add more algorithms (e.g., DoD 3-pass, random-only, zero-pass) without rewriting the overwrite function.”
+
+4) _secure_rename_ultimate(path): metadata obfuscation via renaming
+Purpose
+
+Before overwriting, you rename the file up to 10 times to random names like:
+AdvancedMODE_<64 hex chars>.tmp
+
+Why this matters:
+
+Even if a forensic tool recovers directory entries or partial metadata, the original filename becomes harder to associate.
+
+Repeated renames also generate filesystem metadata churn.
+
+How it works
+
+os.replace(old, new) does an atomic rename when possible.
+
+It logs: Original: X -> Final: Y
+
+Important note to say in discussion:
+
+Rename affects name metadata, but it does not guarantee wiping older filename traces from filesystem journals (especially NTFS $LogFile / USN journal, and on Linux ext4 journal). Still, it improves practical obfuscation in many cases.
+
+5) WindowsTimestampObfuscator: timestamp manipulation (Windows)
+
+This is the “advanced Windows part” that aims to change timestamps beyond normal os.utime.
+
+Goal stated in your code
+
+“Changes ALL 6 NTFS timestamps”
+
+In NTFS, timestamps exist in multiple places (commonly):
+
+$STANDARD_INFORMATION attribute timestamps (4)
+
+$FILE_NAME attribute timestamps (another 4)
+
+Your code attempts to modify timestamps using WinAPI calls (primarily affecting what SetFileTime can reach).
+
+(A) enable_backup_privileges()
+
+This tries to enable:
+
+SeBackupPrivilege
+
+SeRestorePrivilege
+
+Why:
+
+These privileges can help bypass normal permission checks for reading/writing file attributes in some contexts.
+
+What you can say:
+
+“On Windows, changing timestamps reliably can require higher privileges, so I attempted to enable backup/restore privileges through the process token.”
+
+(B) _unix_time_to_file_time()
+
+Converts UNIX epoch → Windows FILETIME units (100ns ticks since 1601).
+
+(C) _set_file_times_basic()
+
+Uses:
+
+CreateFileW(...) with FILE_WRITE_ATTRIBUTES
+
+SetFileTime(handle, creation, access, write)
+
+It sets ctime/atime/mtime using randomized offsets.
+
+(D) _set_file_times_advanced()
+
+Same idea, but tries multiple access modes.
+
+(E) _set_file_times_backup()
+
+Tries opening with broader access (GENERIC_ALL) and repeats timestamp setting.
+
+obfuscate_timestamps_ultimate()
+
+enables privileges
+
+randomly chooses timestamps within 20 years back
+
+runs three setter methods
+
+repeats 5 more random “basic” changes
+
+What this achieves conceptually:
+
+It tries to make the timestamps inconsistent/untrustworthy, so forensic timeline correlation becomes harder.
+
+6) _obscure_timestamps_ultimate(file) cross-platform wrapper
+
+On Windows: uses your WindowsTimestampObfuscator
+
+Otherwise: uses _unix_timestamp_ultimate which does repeated os.utime
+
+Also has fallback _obscure_timestamps_basic if something fails.
+
+7) _secure_overwrite_ultimate(): the core shred engine
+
+This is the most important function to explain.
+
+Inputs
+
+file: Path
+
+progress: callback progress(pass_num, total_passes, status, bytes_processed)
+
+stop_event: allows external cancellation (thread-safe)
+
+Step-by-step logic
+
+Read file size: original_size
+
+Load patterns: patterns = get_wipe_method()
+
+Pick adaptive buffer size:
+
+big file → big buffer (16MB)
+
+small file → smaller buffer (128KB)
+
+Open file in binary read/write, unbuffered:
+
+with file.open("r+b", buffering=0) as fh:
+
+
+For each pass:
+
+check cancel (stop_event)
+
+call progress with "PASS x/y"
+
+seek to start
+
+write chunks until file size reached
+
+flush + os.fsync() to force to disk
+
+Final quick verification reads first 4KB and warns if not all zeros (but note: your final pass is random, so “not all zeros” is expected).
+
+Why fsync matters
+
+It reduces “data still in cache not actually written yet” risk.
+
+The cancellation design
+
+You support two cancellation mechanisms:
+
+stop_event.is_set()
+
+progress(...) returning False
+
+That’s good engineering, and very professor-friendly.
+
+8) _is_sensitive_system_path(path): safety guardrail
+
+This is your “do not destroy the OS” protection.
+
+Intended behavior
+
+If the path is inside the user home directory (Path.home()), allow it (Desktop/Documents etc.)
+
+Block critical system folders:
+
+Windows: C:\Windows, Program Files, System32, etc.
+
+Linux: /etc, /bin, /usr, /var, etc.
+
+Block whole root drives like C:\ directly
+
+How to explain:
+
+“I added a safety filter to prevent catastrophic shredding of system locations. For a tool like this, safety validation is a required control.”
+
+9) shred_file_Advanced_mode(...): the full workflow controller
+
+This function is the “main single-file operation”.
+
+Parameters
+
+path: string or PathLike
+
+keep_file: if True, it overwrites + obfuscates metadata but does not delete
+
+progress, stop_event: same as overwrite
+
+Workflow
+
+Validate target exists
+
+Block sensitive system paths
+
+Block symlinks (prevents shredding unintended targets)
+
+Save file info (original_size, original_name)
+
+Progress init
+
+Step 1: rename → _secure_rename_ultimate
+
+Step 2: overwrite → _secure_overwrite_ultimate (35 passes)
+
+Step 3: timestamps → _obscure_timestamps_ultimate
+
+Step 4: final
+
+if keep_file=False: delete file with unlink(), verify it’s gone
+
+else: return success message showing new scrambled filename
+
+On interruption
+
+If canceled and not keeping files, it attempts cleanup (delete scrambled file).
+
+This is a “transaction-like” behavior: if canceled mid-way, it tries to avoid leaving sensitive content around.
+
+10) shred_directory(...): directory support
+
+This does secure deletion for an entire directory.
+
+Steps
+
+Validate input is a directory
+
+Block system paths
+
+Walk recursively using directory.rglob("*")
+
+Collect all files that:
+
+are real files
+
+not symlinks
+
+not in sensitive system paths
+
+Iterate files:
+
+build a per-file file_progress() adapter that converts pass-progress into overall progress
+
+call shred_file_Advanced_mode(...)
+
+After all files:
+
+if not keep_file: shutil.rmtree(directory) to remove folder structure
+
+11) validate_shredding_path(...) and get_available_methods()
+
+These are utility functions:
+
+get_available_methods() returns method metadata (useful for GUI later)
+
+validate_shredding_path() checks:
+
+exists
+
+not system location
+
+not symlink
+
+12) shred_file = shred_file_Advanced_mode
+
+This is an alias so old code can still call shred_file(...).
+
+The “professor discussion” section: key realism points (VERY IMPORTANT)
+
+These are the exact points that make your explanation sound professional and honest:
+
+1) SSD reality
+
+Even 35-pass overwrites do not guarantee physical irrecoverability on SSDs because:
+
+wear leveling moves writes to different cells
+
+TRIM + garbage collection changes behavior
+So overwrite is strongest on HDDs. On SSDs, secure erase commands are often the recommended approach.
+
+2) Journaling file systems
+
+On NTFS/ext4/APFS, even if file content is overwritten, metadata traces can still exist in:
+
+NTFS $LogFile, USN Journal, $MFT records history
+
+ext4 journal
+So you improved metadata privacy via renaming + timestamp changes, but you can’t claim “guaranteed removal of all forensic traces” on journaling FS.
+
+3) Timestamp “ALL 6” claim
+
+Your code tries hard, but in practice:
+
+SetFileTime typically affects what Windows exposes via standard APIs (often $STANDARD_INFORMATION timestamps).
+
+$FILE_NAME timestamps may not always be fully controllable using only these calls.
+So you can phrase it professionally like:
+
+“I attempt multi-method timestamp obfuscation; results depend on OS and filesystem behavior.”
+
+A few code-level issues you should be ready if your prof asks (quick, but smart)
+
+These are not insults—these are “engineering notes”:
+
+AdjustTokenPrivileges usage
+Windows expects a TOKEN_PRIVILEGES structure, not just a raw array of LUID_AND_ATTRIBUTES. Your function may work inconsistently. (You can say “needs refinement for full correctness”.)
+
+CreateFileW handle check
+Windows invalid handle is INVALID_HANDLE_VALUE (which is -1 cast). Your check if handle != -1 is close, but safer is comparing against ctypes.wintypes.HANDLE(-1).value or defining INVALID_HANDLE_VALUE.
+
+Final verification logic
+You warn on “non-zero data detected”, but your final pass is random → non-zero is expected. Better check would be: “does it match expected pattern?” (but expensive).
+
+Mentioning these shows maturity: you understand the difference between “works in testing” and “formally correct WinAPI usage.”
+
+A clean “1-minute explanation script” you can say to your professor
+
+Here’s a compact way to present it verbally:
+
+“This program is a secure deletion tool. For a chosen file, it first validates the path to avoid dangerous system locations and blocks symlinks. Then it renames the file multiple times to destroy the original filename context. After that, it overwrites the file content using a 35-pass Gutmann-style multi-pattern wipe with adaptive buffer sizes and fsync to force disk writes. Then it obfuscates timestamps—on Windows using WinAPI calls like CreateFileW and SetFileTime, and on Unix using repeated utime—to reduce timeline usefulness. Finally, it deletes the file and verifies deletion, or optionally keeps the overwritten file if keep_file is enabled. For directories it repeats this workflow for every file and removes the directory structure.”

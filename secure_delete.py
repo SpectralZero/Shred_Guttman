@@ -10,12 +10,12 @@ import logging
 import platform
 import threading
 import time
-import hashlib
-import ctypes
 import random
+import re
 from pathlib import Path
 from typing import Callable, Optional, Tuple, List, Dict
-import psutil
+import ctypes
+import ctypes.wintypes
 
 # Enhanced logging
 logging.basicConfig(level=logging.INFO)
@@ -78,6 +78,90 @@ class AdvancedModeShredder:
     def get_method_info() -> Dict:
         return AdvancedModeShredder.METHOD_DETAILS["gutmann_35_pass"]
 
+def _is_sensitive_system_path(path: Path) -> bool:
+    """FIXED: More comprehensive root path detection"""
+    try:
+        abs_path = path.absolute()
+        abs_path_str = str(abs_path).lower().replace('/', '\\')
+        
+        # Allow all user directories
+        user_home = Path.home()
+        if abs_path.is_relative_to(user_home):
+            return False
+            
+        # Critical system paths
+        sensitive_paths = set()
+        
+        if platform.system() == "Windows":
+            sensitive_paths.update([
+                "c:\\windows\\", "c:\\program files\\", "c:\\program files (x86)\\", 
+                "c:\\programdata\\", "c:\\system32\\", "c:\\syswow64\\",
+                "c:\\$windows.~bt\\", "c:\\$windows.~ws\\", "c:\\boot\\", 
+                "c:\\recovery\\", "c:\\system volume information\\",
+                "c:\\config.msi\\", "c:\\pagefile.sys", "c:\\hiberfil.sys",
+                "c:\\swapfile.sys", "c:\\windows.old\\"
+            ])
+            
+            # Block root drives more comprehensively
+            if re.match(r'^[a-z]:\\?$', abs_path_str) or re.match(r'^[a-z]:$', abs_path_str):
+                return True
+
+            # Block paths that are exactly at root level
+            if len(abs_path_str) == 3 and abs_path_str[1:3] == ":\\":
+                return True
+        
+        else:  # Unix/Linux/macOS
+            sensitive_paths.update([
+                "/bin/", "/sbin/", "/etc/", "/usr/", "/var/", "/sys/", 
+                "/proc/", "/dev/", "/lib/", "/lib64/", "/boot/", "/root/",
+                "/opt/", "/mnt/", "/media/", "/lost+found/", "/initrd",
+                "/vmlinuz", "/System/", "/Library/", "/Applications/"
+            ])
+            
+            if abs_path_str in ["/", "/home/", "/root/", "/etc/", "/usr/", "/var/"]:
+                return True
+
+        # Check if path starts with any sensitive path
+        abs_path_str_norm = abs_path_str + "\\" if not abs_path_str.endswith("\\") else abs_path_str
+        return any(abs_path_str_norm.startswith(sensitive_path) for sensitive_path in sensitive_paths)
+        
+    except Exception:
+        return True  # Maximum safety
+
+def safety_check_shred_path(path: Path) -> Tuple[bool, str, str]:
+    """
+    Comprehensive safety check before shredding
+    Returns: (is_safe, warning_message, error_message)
+    """
+    try:
+        path = Path(path).absolute()
+        
+        # 1. Check existence
+        if not path.exists():
+            return False, "", "Path does not exist"
+            
+        # 2. Check system path
+        if _is_sensitive_system_path(path):
+            if platform.system() == "Windows":
+                return False, "", "Cannot shred system directories. This includes:\n• Windows system folders\n• Program Files\n• Root drives (C:\, D:\, etc.)"
+            else:
+                return False, "", "Cannot shred system directories"
+                
+        # 3. Check for running executables
+        if path.is_file() and path.suffix.lower() in ['.exe', '.dll', '.sys', '.so', '.dylib']:
+            return False, "", f"Cannot shred active system files: {path.name}"
+            
+        # 4. Check file size warning
+        if path.is_file():
+            size = path.stat().st_size
+            if size > 1024 * 1024 * 1024:  # >1GB
+                return True, f"Warning: Large file ({size/1024/1024/1024:.1f} GB). This may take a while.", ""
+                
+        return True, "", ""
+        
+    except Exception as e:
+        return False, "", f"Safety check error: {e}"
+
 def _secure_rename_ultimate(path: Path) -> Path:
     """ULTIMATE secure renaming with guaranteed obfuscation"""
     current_path = path
@@ -106,8 +190,6 @@ def _secure_rename_ultimate(path: Path) -> Path:
         raise ShredError(f"Secure rename failed: {e}")
 
 # COMPLETE TIMESTAMP OBFUSCATION MODULE
-import ctypes.wintypes
-
 class WindowsTimestampObfuscator:
     """ULTIMATE Windows timestamp obfuscation - Changes ALL 6 NTFS timestamps"""
     
@@ -116,22 +198,27 @@ class WindowsTimestampObfuscator:
     FILE_WRITE_EA = 0x10
     FILE_READ_EA = 0x8
     OPEN_EXISTING = 3
-    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000 # Bypasses normal security checks
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     FILE_SHARE_READ = 0x00000001
     FILE_SHARE_WRITE = 0x00000002
     FILE_SHARE_DELETE = 0x00000004
     
     # Privilege constants
-    SE_BACKUP_NAME = "SeBackupPrivilege" # Read any file (bypass permissions)
-    SE_RESTORE_NAME = "SeRestorePrivilege" # Write any file (bypass permissions)
-    TOKEN_ADJUST_PRIVILEGES = 0x0020 # # Can change privileges
-    TOKEN_QUERY = 0x0008   # Can read privilege info
-    SE_PRIVILEGE_ENABLED = 0x00000002 # Enable the privilege 
+    SE_BACKUP_NAME = "SeBackupPrivilege"
+    SE_RESTORE_NAME = "SeRestorePrivilege"
+    TOKEN_ADJUST_PRIVILEGES = 0x0020
+    TOKEN_QUERY = 0x0008
+    SE_PRIVILEGE_ENABLED = 0x00000002
     
     @staticmethod
     def enable_backup_privileges():
         """Enable backup and restore privileges for full NTFS access"""
         try:
+            # Check if running as administrator first
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                LOG.warning("Not running as administrator - some timestamp operations may fail")
+                return False
+                
             # Get current process token
             token = ctypes.wintypes.HANDLE()
             kernel32 = ctypes.windll.kernel32
@@ -233,7 +320,6 @@ class WindowsTimestampObfuscator:
     @staticmethod
     def _unix_time_to_file_time(unix_time):
         """Convert UNIX time to Windows FILETIME"""
-        # Windows epoch starts from 1601-01-01 (11644473600 seconds before UNIX epoch)
         return int((unix_time + 11644473600) * 10000000)
     
     @staticmethod
@@ -267,7 +353,7 @@ class WindowsTimestampObfuscator:
                     mtime.dwLowDateTime = (file_time + random.randint(1000000, 100000000)) & 0xFFFFFFFF
                     mtime.dwHighDateTime = (file_time + random.randint(1000000, 100000000)) >> 32
                     
-                    # Set the file times (affects $STANDARD_INFORMATION)
+                    # Set the file times
                     kernel32.SetFileTime(
                         handle,
                         ctypes.byref(ctime),
@@ -433,22 +519,27 @@ def _secure_overwrite_ultimate(
     """ULTIMATE secure overwrite with guaranteed completion"""
     
     try:
-        # Get file size and patterns
         original_size = file.stat().st_size
         patterns = AdvancedModeShredder.get_wipe_method()
         total_passes = len(patterns)
         
-        # Adaptive buffer sizing for optimal performance
-        if original_size > 1024 * 1024 * 1024:  # >1GB
-            bufsize = 16 * 1024 * 1024  # 16MB
+        # Safer buffer sizing with memory limits
+        MAX_BUFFER_SIZE = 64 * 1024 * 1024  # 64MB max
+        MIN_BUFFER_SIZE = 64 * 1024  # 64KB min
+        
+        if original_size > 10 * 1024 * 1024 * 1024:  # >10GB
+            bufsize = min(MAX_BUFFER_SIZE, original_size // 1000)
+        elif original_size > 1024 * 1024 * 1024:  # >1GB
+            bufsize = 8 * 1024 * 1024  # 8MB
         elif original_size > 100 * 1024 * 1024:  # >100MB
-            bufsize = 4 * 1024 * 1024  # 4MB
-        elif original_size > 10 * 1024 * 1024:  # >10MB
-            bufsize = 1 * 1024 * 1024  # 1MB
+            bufsize = 2 * 1024 * 1024  # 2MB
         else:
-            bufsize = 128 * 1024  # 128KB
+            bufsize = MIN_BUFFER_SIZE
+            
+        # Ensure bufsize is reasonable
+        bufsize = max(MIN_BUFFER_SIZE, min(MAX_BUFFER_SIZE, bufsize))
 
-        LOG.info(f"Starting secure overwrite: {original_size} bytes, {total_passes} passes")
+        LOG.info(f"Starting secure overwrite: {original_size} bytes, {total_passes} passes, buffer: {bufsize/1024/1024:.1f}MB")
 
         with file.open("r+b", buffering=0) as fh:
             for pass_num, pattern_fn in enumerate(patterns, 1):
@@ -502,54 +593,12 @@ def _secure_overwrite_ultimate(
         return True, f"SECURE OVERWRITE COMPLETED - {total_passes} PASSES"
         
     except PermissionError as e:
-        raise ShredError(f"Permission denied: {e}")
+        error_msg = f"Permission denied. Try:\n1. Close any programs using this file\n2. Run as administrator\n3. Check file permissions\nError: {e}"
+        raise ShredError(error_msg)
     except OSError as e:
         raise ShredError(f"File system error: {e}")
     except Exception as e:
         raise ShredError(f"Unexpected error during overwrite: {e}")
-
-def _is_sensitive_system_path(path: Path) -> bool:
-    """FIXED: Allow user directories including Desktop"""
-    try:
-        abs_path = path.absolute()
-        abs_path_str = str(abs_path).lower()
-        
-        # Allow all user directories
-        user_home = Path.home()
-        if abs_path.is_relative_to(user_home):
-            return False
-            
-        # Critical system paths only
-        sensitive_paths = set()
-        
-        if platform.system() == "Windows":
-            sensitive_paths.update([
-                "c:\\windows\\", "c:\\program files\\", "c:\\programdata\\",
-                "c:\\system32\\", "c:\\$windows.~bt\\", "c:\\$windows.~ws\\",
-                "c:\\boot\\", "c:\\recovery\\", "c:\\system volume information\\",
-                "c:\\config.msi\\", "c:\\pagefile.sys", "c:\\hiberfil.sys",
-                "c:\\swapfile.sys", "c:\\windows.old\\"
-            ])
-            
-            # Block root drives
-            if abs_path_str in ["c:\\", "d:\\", "e:\\", "f:\\", "g:\\", "h:\\"]:
-                return True
-
-        else:  # Unix/Linux/macOS
-            sensitive_paths.update([
-                "/bin/", "/sbin/", "/etc/", "/usr/", "/var/", "/sys/", 
-                "/proc/", "/dev/", "/lib/", "/lib64/", "/boot/", "/root/",
-                "/opt/", "/mnt/", "/media/", "/lost+found/", "/initrd",
-                "/vmlinuz", "/System/", "/Library/", "/Applications/"
-            ])
-            
-            if abs_path_str == "/":
-                return True
-
-        return any(abs_path_str.startswith(path) for path in sensitive_paths)
-        
-    except Exception:
-        return True  # Maximum safety
 
 def shred_file_Advanced_mode(
     path: str | os.PathLike,
@@ -557,24 +606,38 @@ def shred_file_Advanced_mode(
     progress: Optional[Callable[[int, int, str, int], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Tuple[bool, str]:
-    """Advanced MODE ULTIMATE file shredding - GUARANTEED metadata obfuscation"""
+    """Advanced MODE ULTIMATE file shredding"""
     
     path = Path(path)
     operation_id = secrets.token_hex(8)
     
     LOG.info(f"[{operation_id}] STARTING Advanced MODE SHRED: {path}")
-    LOG.info(f"[{operation_id}] KEEP_FILE: {keep_file}")
     
     try:
         # Validation
         if not path.exists():
             raise ShredError("Target does not exist")
-
-        if _is_sensitive_system_path(path.absolute()):
-            raise ShredError(f"REFUSING TO SHRED SYSTEM PATH: {path}")
-
+            
+        if not path.is_file():
+            raise ShredError("Target is not a regular file")
+            
+        # Check for special files
         if path.is_symlink():
             raise ShredError("Symbolic links not supported")
+            
+        if path.is_dir():
+            raise ShredError("Use shred_directory() for directories")
+            
+        # Check for system files
+        if _is_sensitive_system_path(path.absolute()):
+            # Get detailed path info
+            abs_path = str(path.absolute()).lower()
+            user_home = str(Path.home()).lower()
+            if abs_path.startswith(user_home):
+                # User directory - ask for confirmation
+                LOG.warning(f"Shredding in user directory: {path}")
+            else:
+                raise ShredError(f"REFUSING TO SHRED SYSTEM PATH: {path}")
 
         # Get file info
         original_size = path.stat().st_size
@@ -611,6 +674,12 @@ def shred_file_Advanced_mode(
             if scrambled_path.exists():
                 raise ShredError("FILE STILL EXISTS AFTER DELETION")
             
+            # Check for backup copies
+            if verify_shred_completion(path):
+                LOG.info("File completely destroyed - no traces found")
+            else:
+                LOG.warning("Possible backup copies detected")
+            
             final_message = f"☠️ FILE DESTROYED: {original_name} -> IRRECOVERABLE"
         else:
             final_message = f"✅ FILE PRESERVED: {original_name} -> {scrambled_path.name} (ALL METADATA OBFUSCATED)"
@@ -632,6 +701,38 @@ def shred_file_Advanced_mode(
         LOG.error(f"[{operation_id}] Advanced MODE FAILED: {exc}")
         return False, f" Advanced MODE ERROR: {exc}"
 
+def estimate_shred_time(file_size: int) -> str:
+    """Estimate time for 35-pass shredding"""
+    # Rough estimate: 50-100 MB/s per pass
+    speed_per_pass = 50 * 1024 * 1024  # 50 MB/s
+    total_data = file_size * 35
+    seconds = total_data / speed_per_pass
+    
+    if seconds < 60:
+        return f"{seconds:.0f} seconds"
+    elif seconds < 3600:
+        return f"{seconds/60:.1f} minutes"
+    else:
+        return f"{seconds/3600:.1f} hours"
+
+def verify_shred_completion(file_path: Path) -> bool:
+    """Verify file was properly shredded"""
+    try:
+        # Check if file still exists
+        if file_path.exists():
+            return False
+            
+        # Check for backup copies
+        for suffix in ['.bak', '.backup', '.old', '.temp', '.tmp']:
+            backup_file = file_path.with_suffix(file_path.suffix + suffix)
+            if backup_file.exists():
+                LOG.warning(f"Backup file found: {backup_file}")
+                return False
+                
+        return True
+    except:
+        return False
+
 def shred_directory(
     directory: str | os.PathLike,
     keep_file: bool = False,
@@ -646,6 +747,14 @@ def shred_directory(
     LOG.info(f"[{operation_id}] STARTING DIRECTORY SHRED: {directory}")
 
     try:
+        # Safety check for directory
+        is_safe, warning, error = safety_check_shred_path(directory)
+        if not is_safe:
+            raise ShredError(error)
+        
+        if warning:
+            LOG.warning(warning)
+
         if not directory.is_dir():
             raise ShredError("Target is not a directory")
 
@@ -669,10 +778,16 @@ def shred_directory(
                         except:
                             pass
         except PermissionError as e:
-            raise ShredError(f"Permission denied: {e}")
+            error_msg = f"Permission denied. Try:\n1. Close any programs using these files\n2. Run as administrator\n3. Check permissions\nError: {e}"
+            raise ShredError(error_msg)
 
         if not files:
             return False, "No files found in directory"
+
+        # Estimate time for large directories
+        if total_size > 1024 * 1024 * 1024:  # >1GB
+            est_time = estimate_shred_time(total_size)
+            LOG.info(f"Estimated shred time for directory: {est_time}")
 
         completed_files = 0
 
